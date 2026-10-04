@@ -1,0 +1,306 @@
+package cmd
+
+import (
+	"strconv"
+
+	"github.com/github/gh-stack/internal/config"
+	"github.com/spf13/cobra"
+)
+
+const navigationPrintPathHelp = "Print the target worktree path without switching a branch held elsewhere"
+
+func UpCmd(cfg *config.Config) *cobra.Command {
+	var printPath bool
+	cmd := &cobra.Command{
+		Use:   "up [n]",
+		Short: "Check out a branch further up in the stack (further from the trunk)",
+		Long: `Check out a branch further up in the stack (further from the trunk).
+Merged branches are automatically skipped.`,
+		Example: `  # Move one branch up
+  $ gh stack up
+
+  # Move three branches up
+  $ gh stack up 3`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			n := 1
+			if len(args) > 0 {
+				var err error
+				n, err = strconv.Atoi(args[0])
+				if err != nil {
+					cfg.Errorf("invalid number %q", args[0])
+					return ErrInvalidArgs
+				}
+			}
+			return runNavigateWithPath(cfg, n, printPath)
+		},
+	}
+	cmd.Flags().BoolVar(&printPath, "print-path", false, navigationPrintPathHelp)
+	return cmd
+}
+
+func DownCmd(cfg *config.Config) *cobra.Command {
+	var printPath bool
+	cmd := &cobra.Command{
+		Use:   "down [n]",
+		Short: "Check out a branch further down in the stack (closer to the trunk)",
+		Long: `Check out a branch further down in the stack (closer to the trunk).
+Merged branches are automatically skipped.`,
+		Example: `  # Move one branch down
+  $ gh stack down
+
+  # Move two branches down
+  $ gh stack down 2`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			n := 1
+			if len(args) > 0 {
+				var err error
+				n, err = strconv.Atoi(args[0])
+				if err != nil {
+					cfg.Errorf("invalid number %q", args[0])
+					return ErrInvalidArgs
+				}
+			}
+			return runNavigateWithPath(cfg, -n, printPath)
+		},
+	}
+	cmd.Flags().BoolVar(&printPath, "print-path", false, navigationPrintPathHelp)
+	return cmd
+}
+
+func TopCmd(cfg *config.Config) *cobra.Command {
+	var printPath bool
+	cmd := &cobra.Command{
+		Use:   "top",
+		Short: "Check out the top branch of the stack (furthest from the trunk)",
+		Long: `Check out the top branch of the stack (furthest from the trunk).
+Merged branches are automatically skipped.`,
+		Example: `  # Jump to the top of the stack
+  $ gh stack top`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runNavigateToEndWithPath(cfg, true, printPath)
+		},
+	}
+	cmd.Flags().BoolVar(&printPath, "print-path", false, navigationPrintPathHelp)
+	return cmd
+}
+
+func BottomCmd(cfg *config.Config) *cobra.Command {
+	var printPath bool
+	cmd := &cobra.Command{
+		Use:   "bottom",
+		Short: "Check out the bottom branch of the stack (closest to the trunk)",
+		Long: `Check out the bottom branch of the stack (closest to the trunk).
+Merged branches are automatically skipped.`,
+		Example: `  # Jump to the bottom of the stack
+  $ gh stack bottom`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runNavigateToEndWithPath(cfg, false, printPath)
+		},
+	}
+	cmd.Flags().BoolVar(&printPath, "print-path", false, navigationPrintPathHelp)
+	return cmd
+}
+
+func runNavigate(cfg *config.Config, delta int) error {
+	return runNavigateWithPath(cfg, delta, false)
+}
+
+func runNavigateWithPath(cfg *config.Config, delta int, printPath bool) error {
+	if printPath {
+		cfg = noninteractiveConfig(cfg)
+	}
+	result, err := loadNavigationStack(cfg, printPath)
+	if err != nil {
+		return stackLookupError(err)
+	}
+	s := result.Stack
+	currentBranch := result.CurrentBranch
+
+	idx := s.IndexOf(currentBranch)
+	if idx < 0 {
+		// Current branch is the trunk (not in s.Branches).
+		// loadStack guarantees the branch is part of the stack.
+		if delta > 0 && len(s.Branches) > 0 {
+			targetIdx := s.FirstActiveBranchIndex()
+			if targetIdx < 0 {
+				targetIdx = len(s.Branches) - 1
+				cfg.Warningf("Warning: all branches in this stack have been merged")
+			}
+			target := s.Branches[targetIdx].Branch
+			if err := checkoutWorktreeBranch(cfg, target, printPath); err != nil {
+				return err
+			}
+			if printPath {
+				return nil
+			}
+			cfg.Successf("Switched to %s", target)
+			return nil
+		}
+		cfg.Printf("Already at the bottom of the stack")
+		if printPath {
+			return checkoutWorktreeBranch(cfg, currentBranch, true)
+		}
+		return nil
+	}
+
+	onMerged := s.Branches[idx].IsMerged()
+	if onMerged {
+		cfg.Warningf("Warning: you are on merged branch %q", currentBranch)
+	}
+
+	var newIdx int
+	var skipped int
+
+	if onMerged {
+		// Navigate relative to current position among ALL branches
+		newIdx = idx + delta
+		if newIdx < 0 {
+			newIdx = 0
+		}
+		if newIdx >= len(s.Branches) {
+			newIdx = len(s.Branches) - 1
+		}
+	} else {
+		// Build list of active (non-merged) branch indices
+		activeIndices := s.ActiveBranchIndices()
+
+		// Find current position in active list
+		activePos := -1
+		for i, ai := range activeIndices {
+			if ai == idx {
+				activePos = i
+				break
+			}
+		}
+
+		newActivePos := activePos + delta
+		if newActivePos < 0 {
+			newActivePos = 0
+		}
+		if newActivePos >= len(activeIndices) {
+			newActivePos = len(activeIndices) - 1
+		}
+
+		newIdx = activeIndices[newActivePos]
+
+		// Count how many merged branches were skipped
+		if newIdx > idx {
+			for i := idx + 1; i < newIdx; i++ {
+				if s.Branches[i].IsMerged() {
+					skipped++
+				}
+			}
+		} else if newIdx < idx {
+			for i := newIdx + 1; i < idx; i++ {
+				if s.Branches[i].IsMerged() {
+					skipped++
+				}
+			}
+		}
+	}
+
+	if newIdx == idx {
+		if delta > 0 {
+			cfg.Printf("Already at the top of the stack")
+		} else {
+			cfg.Printf("Already at the bottom of the stack")
+		}
+		if printPath {
+			return checkoutWorktreeBranch(cfg, currentBranch, true)
+		}
+		return nil
+	}
+
+	target := s.Branches[newIdx].Branch
+	if err := checkoutWorktreeBranch(cfg, target, printPath); err != nil {
+		return err
+	}
+	if printPath {
+		return nil
+	}
+
+	if skipped > 0 {
+		cfg.Printf("Skipped %d merged %s", skipped, plural(skipped, "branch", "branches"))
+	}
+
+	moved := newIdx - idx
+	direction := "up"
+	if moved < 0 {
+		direction = "down"
+		moved = -moved
+	}
+
+	cfg.Successf("Checked out %s, %d %s %s", target, moved, plural(moved, "branch", "branches"), direction)
+	return nil
+}
+
+func runNavigateToEnd(cfg *config.Config, top bool) error {
+	return runNavigateToEndWithPath(cfg, top, false)
+}
+
+func runNavigateToEndWithPath(cfg *config.Config, top, printPath bool) error {
+	if printPath {
+		cfg = noninteractiveConfig(cfg)
+	}
+	result, err := loadNavigationStack(cfg, printPath)
+	if err != nil {
+		return stackLookupError(err)
+	}
+	s := result.Stack
+	currentBranch := result.CurrentBranch
+
+	if len(s.Branches) == 0 {
+		cfg.Errorf("stack has no branches")
+		return ErrNotInStack
+	}
+
+	var targetIdx int
+	if top {
+		targetIdx = len(s.Branches) - 1
+	} else {
+		targetIdx = s.FirstActiveBranchIndex()
+		if targetIdx < 0 {
+			// All merged — fall back to first branch with warning
+			targetIdx = 0
+			cfg.Warningf("Warning: all branches in this stack have been merged")
+		}
+	}
+
+	target := s.Branches[targetIdx].Branch
+	if target == currentBranch {
+		if top {
+			cfg.Printf("Already at the top of the stack")
+		} else {
+			cfg.Printf("Already at the bottom of the stack")
+		}
+		if printPath {
+			return checkoutWorktreeBranch(cfg, target, true)
+		}
+		return nil
+	}
+
+	if err := checkoutWorktreeBranch(cfg, target, printPath); err != nil {
+		return err
+	}
+	if printPath {
+		return nil
+	}
+
+	if s.Branches[targetIdx].IsMerged() {
+		cfg.Warningf("Warning: you are on merged branch %q", target)
+	}
+
+	cfg.Successf("Switched to %s", target)
+	return nil
+}
+
+func plural(n int, singular, pluralForm string) string {
+	if n == 1 {
+		return singular
+	}
+	return pluralForm
+}
