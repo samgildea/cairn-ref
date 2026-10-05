@@ -1,0 +1,16 @@
+.vscode/**
+.demo/**
+.harness/**
+out/**
+node_modules/**
+src/**
+test/**
+scripts/**
+.gitignore
+.yarnrc
+esbuild.js
+vitest.config.mts
+**/tsconfig*.json
+**/eslint.config.mjs
+**/*.map
+**/*.ts

@@ -1,0 +1,30 @@
+{
+  "trunk": "main",
+  "currentBranch": "ui",
+  "branches": [
+    {
+      "name": "auth",
+      "base": "a83b85bf6a80fd4b98ae07570995bc853a3f261c",
+      "isCurrent": false,
+      "isMerged": false,
+      "isQueued": false,
+      "needsRebase": false
+    },
+    {
+      "name": "api",
+      "base": "213b6f23c190b02a1b2a10cdd091c16ce65cd770",
+      "isCurrent": false,
+      "isMerged": false,
+      "isQueued": false,
+      "needsRebase": false
+    },
+    {
+      "name": "ui",
+      "base": "f0a84f814e857799756ccac6c10c321a1047c86a",
+      "isCurrent": true,
+      "isMerged": false,
+      "isQueued": false,
+      "needsRebase": false
+    }
+  ]
+}
