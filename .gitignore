@@ -1,2 +1,8 @@
-node_modules/
+out
+dist
+node_modules
+.vscode-test/
+*.vsix
+.demo
+.harness
 .DS_Store
